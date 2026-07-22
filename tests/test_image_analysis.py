@@ -2,7 +2,12 @@ import unittest
 
 from fastapi import UploadFile
 
-from app.services.image_analysis import extract_json_payload, validate_image_files
+from app.core.config import DEFAULT_LLM_PROVIDER, OPENAI_MODEL
+from app.services.image_analysis import (
+    extract_json_payload,
+    get_model_settings,
+    validate_image_files,
+)
 
 
 class ExtractJsonPayloadTests(unittest.TestCase):
@@ -46,6 +51,19 @@ class ExtractJsonPayloadTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             validate_image_files(files)
+
+    def test_get_model_settings_prefers_explicit_provider_and_model(self):
+        settings = get_model_settings(provider="google", model="gemini-1.5-flash")
+
+        self.assertEqual(settings["provider"], "google")
+        self.assertEqual(settings["model"], "gemini-1.5-flash")
+        self.assertIn("api_key", settings)
+
+    def test_get_model_settings_defaults_to_openai(self):
+        settings = get_model_settings()
+
+        self.assertEqual(settings["provider"], DEFAULT_LLM_PROVIDER)
+        self.assertEqual(settings["model"], OPENAI_MODEL if DEFAULT_LLM_PROVIDER == "openai" else settings["model"])
 
 
 if __name__ == "__main__":

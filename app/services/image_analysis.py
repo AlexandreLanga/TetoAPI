@@ -1,16 +1,22 @@
 import base64
 import json
+import os
 from io import BytesIO
 from typing import Any
 
 from fastapi import UploadFile
 from langchain_core.messages import HumanMessage
-from langchain_openai import ChatOpenAI
 from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimitError
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
-from app.core.config import OPENAI_API_KEY, OPENAI_MODEL
+from app.core.config import (
+    DEFAULT_LLM_PROVIDER,
+    GOOGLE_API_KEY,
+    GOOGLE_MODEL,
+    OPENAI_API_KEY,
+    OPENAI_MODEL,
+)
 from app.prompts.roof_images import ROOF_INSPECTION_PROMPT
 
 
@@ -24,6 +30,8 @@ class AnalysisServiceError(Exception):
 def map_analysis_error(exc: Exception) -> AnalysisServiceError:
     if isinstance(exc, AnalysisServiceError):
         return exc
+
+    error_text = str(exc).lower()
 
     if isinstance(exc, RateLimitError):
         return AnalysisServiceError(
@@ -55,8 +63,26 @@ def map_analysis_error(exc: Exception) -> AnalysisServiceError:
             status_code=502,
         )
 
+    if "quota" in error_text or "resource_exhausted" in error_text:
+        return AnalysisServiceError(
+            "A chave do provedor Google excedeu a quota de uso. Verifique o plano e billing da conta.",
+            status_code=429,
+        )
+
+    if "not_found" in error_text or "model" in error_text and "not found" in error_text:
+        return AnalysisServiceError(
+            "O modelo escolhido no provedor Google não está disponível para essa chave/API. Use um modelo válido.",
+            status_code=404,
+        )
+
     if isinstance(exc, ValueError):
         return AnalysisServiceError(str(exc), status_code=400)
+
+    if hasattr(exc, "status_code"):
+        return AnalysisServiceError(
+            f"Erro do provedor de IA: {exc}",
+            status_code=getattr(exc, "status_code", 500),
+        )
 
     return AnalysisServiceError(
         "Erro inesperado ao processar a análise. Tente novamente mais tarde.",
@@ -87,6 +113,45 @@ def build_prompt_text(prompt: str) -> str:
     return f"{prompt}\n\nInstruções de análise:\n{ROOF_INSPECTION_PROMPT}"
 
 
+def get_model_settings(provider: str | None = None, model: str | None = None) -> dict[str, str]:
+    provider_name = (provider or DEFAULT_LLM_PROVIDER or "openai").strip().lower()
+
+    if provider_name == "google":
+        return {
+            "provider": "google",
+            "model": (model or GOOGLE_MODEL or "gemini-1.5-flash").strip(),
+            "api_key": (os.getenv("GOOGLE_API_KEY", GOOGLE_API_KEY) or "").strip(),
+        }
+
+    return {
+        "provider": "openai",
+        "model": (model or OPENAI_MODEL or "gpt-4o-mini").strip(),
+        "api_key": (os.getenv("OPENAI_API_KEY", OPENAI_API_KEY) or "").strip(),
+    }
+
+
+def build_llm(provider: str | None = None, model: str | None = None):
+    settings = get_model_settings(provider=provider, model=model)
+    provider_name = settings["provider"]
+    model_name = settings["model"]
+    api_key = settings["api_key"]
+
+    if provider_name == "google":
+        if not api_key:
+            raise AnalysisServiceError("GOOGLE_API_KEY não configurada", status_code=500)
+
+        from langchain_google_genai import ChatGoogleGenerativeAI
+
+        return ChatGoogleGenerativeAI(model=model_name, google_api_key=api_key)
+
+    if not api_key:
+        raise AnalysisServiceError("OPENAI_API_KEY não configurada", status_code=500)
+
+    from langchain_openai import ChatOpenAI
+
+    return ChatOpenAI(model=model_name, api_key=api_key)
+
+
 def validate_image_files(files: list[UploadFile]) -> list[UploadFile]:
     #if len(files) < 3:
         #raise ValueError("Envie ao menos 3 imagens para análise")
@@ -98,14 +163,17 @@ def validate_image_files(files: list[UploadFile]) -> list[UploadFile]:
     return files
 
 
-def analyze_images(files: list[UploadFile], prompt: str) -> dict[str, Any]:
+def analyze_images(
+    files: list[UploadFile],
+    prompt: str,
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
     try:
-        if not OPENAI_API_KEY:
-            raise AnalysisServiceError("OPENAI_API_KEY não configurada", status_code=500)
-
+        settings = get_model_settings(provider=provider, model=model)
         validate_image_files(files)
 
-        llm = ChatOpenAI(model=OPENAI_MODEL, api_key=OPENAI_API_KEY)
+        llm = build_llm(provider=settings["provider"], model=settings["model"])
 
         image_parts: list[dict[str, Any]] = []
         for file in files:
@@ -138,17 +206,29 @@ def analyze_images(files: list[UploadFile], prompt: str) -> dict[str, Any]:
 
         payload = extract_json_payload(analysis_text)
         payload.setdefault("prompt", prompt)
+        payload.setdefault("provider", settings["provider"])
+        payload.setdefault("model", settings["model"])
         return payload
     except Exception as exc:
         raise map_analysis_error(exc) from exc
 
 
-def analyze_images_and_build_response(files: list[UploadFile], prompt: str) -> dict[str, Any]:
-    return analyze_images(files, prompt)
+def analyze_images_and_build_response(
+    files: list[UploadFile],
+    prompt: str,
+    provider: str | None = None,
+    model: str | None = None,
+) -> dict[str, Any]:
+    return analyze_images(files, prompt, provider=provider, model=model)
 
 
-def generate_analysis_pdf(files: list[UploadFile], prompt: str) -> bytes:
-    payload = analyze_images(files, prompt)
+def generate_analysis_pdf(
+    files: list[UploadFile],
+    prompt: str,
+    provider: str | None = None,
+    model: str | None = None,
+) -> bytes:
+    payload = analyze_images(files, prompt, provider=provider, model=model)
     return build_pdf_from_payload(payload)
 
 
