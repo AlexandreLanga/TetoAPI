@@ -11,6 +11,7 @@ from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
 from app.core.config import (
+    ALLOWED_IMAGE_TYPES,
     DEFAULT_LLM_PROVIDER,
     GOOGLE_API_KEY,
     GOOGLE_MODEL,
@@ -182,11 +183,8 @@ def build_llm(provider: str | None = None, model: str | None = None):
 
 
 def validate_image_files(files: list[UploadFile]) -> list[UploadFile]:
-    #if len(files) < 3:
-        #raise ValueError("Envie ao menos 3 imagens para análise")
-
     for file in files:
-        if not file.content_type or file.content_type not in {"image/jpeg", "image/png", "image/webp"}:
+        if not file.content_type or file.content_type not in ALLOWED_IMAGE_TYPES:
             raise ValueError("Tipo de arquivo inválido. Envie imagens JPEG, PNG ou WebP.")
 
     return files

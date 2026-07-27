@@ -10,12 +10,12 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api", tags=["analysis"])
 
 
-@router.get("/health")
-def health_check():
+@router.get("/health", summary="Verifica a disponibilidade da API")
+def health_check() -> dict[str, str]:
     return {"status": "ok"}
 
 
-@router.post("/analyze")
+@router.post("/analyze", summary="Analisa imagens de telhado e retorna JSON")
 def analyze_image(
     prompt: str = Form(...),
     files: list[UploadFile] = File(...),
@@ -25,7 +25,7 @@ def analyze_image(
     try:
         payload = analyze_images_and_build_response(files, prompt, provider=provider, model=model)
     except AnalysisServiceError as exc:
-        logger.error(f"Analysis service error: {exc.message}")
+        logger.error("Analysis service error: %s", exc.message)
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
 
     return JSONResponse(
@@ -37,7 +37,7 @@ def analyze_image(
     )
 
 
-@router.post("/analyze/pdf")
+@router.post("/analyze/pdf", summary="Analisa imagens de telhado e gera um PDF")
 def download_pdf(
     prompt: str = Form(...),
     files: list[UploadFile] = File(...),

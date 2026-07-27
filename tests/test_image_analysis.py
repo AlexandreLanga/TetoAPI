@@ -1,4 +1,5 @@
 import unittest
+from io import BytesIO
 
 from fastapi import UploadFile
 
@@ -44,14 +45,17 @@ class ExtractJsonPayloadTests(unittest.TestCase):
         self.assertEqual(result["roof_condition"]["classification"], "Regular")
         self.assertTrue(result["maintenance"]["inspection_required"])
 
-    def test_validate_image_files_requires_three_images(self):
+    def test_validate_image_files_accepts_multiple_valid_images(self):
         files = [
-            UploadFile(filename="a.jpg", file=__import__("io").BytesIO(b"x"))
+            UploadFile(
+                filename="a.jpg",
+                file=BytesIO(b"x"),
+                headers={"content-type": "image/jpeg"},
+            )
             for _ in range(2)
         ]
 
-        with self.assertRaises(ValueError):
-            validate_image_files(files)
+        self.assertEqual(validate_image_files(files), files)
 
     def test_normalize_payload_adds_coordinate_fields_to_issues(self):
         payload = {
