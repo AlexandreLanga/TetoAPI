@@ -74,6 +74,12 @@ Para cada problema encontrado informe:
     - próximo da calha
     - etc.
 
+- nome da imagem onde o problema foi identificado
+
+- coordenadas do problema na imagem
+    - use valores numéricos para x, y, width e height
+    - se não souber com precisão, informe 0 para os campos que não puderem ser determinados
+
 - descrição detalhada
 
 - possível causa
@@ -212,6 +218,13 @@ Estrutura:
       "severity": "",
       "confidence": 0,
       "location": "",
+      "image_name": "",
+      "coordinates": {
+        "x": 0,
+        "y": 0,
+        "width": 0,
+        "height": 0
+      },
       "description": "",
       "possible_cause": "",
       "possible_consequence": "",
@@ -230,6 +243,8 @@ Estrutura:
 }
 
 Caso nenhum problema seja encontrado, o array "issues" deve ser vazio.
+
+Se houver mais de uma imagem anexada, cada issue deve indicar em "image_name" qual imagem corresponde ao problema detectado.
 
 Nunca retorne texto fora do JSON.
 """

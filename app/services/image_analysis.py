@@ -113,6 +113,35 @@ def build_prompt_text(prompt: str) -> str:
     return f"{prompt}\n\nInstruções de análise:\n{ROOF_INSPECTION_PROMPT}"
 
 
+def normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    normalized = dict(payload)
+    issues = normalized.get("issues") or []
+    if not isinstance(issues, list):
+        issues = []
+
+    normalized_issues: list[dict[str, Any]] = []
+    for issue in issues:
+        if not isinstance(issue, dict):
+            continue
+
+        coords = issue.get("coordinates")
+        if not isinstance(coords, dict):
+            coords = {}
+
+        normalized_issue = dict(issue)
+        normalized_issue["image_name"] = issue.get("image_name") or None
+        normalized_issue["coordinates"] = {
+            "x": coords.get("x"),
+            "y": coords.get("y"),
+            "width": coords.get("width"),
+            "height": coords.get("height"),
+        }
+        normalized_issues.append(normalized_issue)
+
+    normalized["issues"] = normalized_issues
+    return normalized
+
+
 def get_model_settings(provider: str | None = None, model: str | None = None) -> dict[str, str]:
     provider_name = (provider or DEFAULT_LLM_PROVIDER or "openai").strip().lower()
 
@@ -189,8 +218,14 @@ def analyze_images(
                 }
             )
 
+        image_names = [file.filename or f"imagem_{index + 1}" for index, file in enumerate(files)]
+        image_context = "\n".join(
+            f"{index + 1}. {name}" for index, name in enumerate(image_names)
+        )
+        prompt_text = f"{build_prompt_text(prompt)}\n\nImagens anexadas:\n{image_context}\n\nOrdem de análise: considere cada imagem separadamente e relacione cada problema identificado ao nome da imagem correspondente no campo 'image_name'."
+
         content = [
-            {"type": "text", "text": build_prompt_text(prompt)},
+            {"type": "text", "text": prompt_text},
             *image_parts,
         ]
         message = HumanMessage(content=content)
@@ -205,10 +240,11 @@ def analyze_images(
             analysis_text = str(response.content)
 
         payload = extract_json_payload(analysis_text)
-        payload.setdefault("prompt", prompt)
-        payload.setdefault("provider", settings["provider"])
-        payload.setdefault("model", settings["model"])
-        return payload
+        normalized_payload = normalize_payload(payload)
+        normalized_payload.setdefault("prompt", prompt)
+        normalized_payload.setdefault("provider", settings["provider"])
+        normalized_payload.setdefault("model", settings["model"])
+        return normalized_payload
     except Exception as exc:
         raise map_analysis_error(exc) from exc
 
