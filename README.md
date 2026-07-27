@@ -31,7 +31,7 @@ Para Gemini, defina `DEFAULT_LLM_PROVIDER=google` e configure `GOOGLE_API_KEY`. 
 ## Execução
 
 ```powershell
-uvicorn app.main:app --reload
+py -m uvicorn app.main:app --port 8080
 ```
 
 Com o servidor ativo, a documentação interativa fica em `http://127.0.0.1:8000/docs`.
