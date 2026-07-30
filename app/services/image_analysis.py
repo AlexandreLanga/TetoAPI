@@ -10,6 +10,11 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError, RateLimi
 from reportlab.lib.pagesizes import letter
 from reportlab.pdfgen import canvas
 
+try:
+    from PIL import Image as PILImage
+except ImportError:  # pragma: no cover - depende do ambiente
+    PILImage = None
+
 from app.core.config import (
     ALLOWED_IMAGE_TYPES,
     DEFAULT_LLM_PROVIDER,
@@ -114,6 +119,121 @@ def build_prompt_text(prompt: str) -> str:
     return f"{prompt}\n\nInstruções de análise:\n{ROOF_INSPECTION_PROMPT}"
 
 
+def build_grounding_context(image_bytes: bytes) -> list[dict[str, Any]]:
+    if not image_bytes or PILImage is None:
+        return []
+
+    try:
+        image = PILImage.open(BytesIO(image_bytes)).convert("RGB")
+    except Exception:
+        return []
+
+    width, height = image.size
+    if width <= 0 or height <= 0:
+        return []
+
+    sample_width = max(32, width // 4)
+    sample_height = max(32, height // 4)
+    sample = image.resize((sample_width, sample_height))
+    pixels = list(sample.getdata())
+    if not pixels:
+        return []
+
+    luminances = [0.299 * r + 0.587 * g + 0.114 * b for r, g, b in pixels]
+    average_luminance = sum(luminances) / len(luminances)
+    candidate_points = [
+        (x, y)
+        for (x, y), luminance in zip(
+            [(x, y) for y in range(sample_height) for x in range(sample_width)],
+            luminances,
+        )
+        if luminance <= average_luminance * 0.75 or luminance >= average_luminance * 1.25
+    ]
+
+    if len(candidate_points) < 8:
+        return []
+
+    min_x = min(x for x, _ in candidate_points)
+    max_x = max(x for x, _ in candidate_points)
+    min_y = min(y for _, y in candidate_points)
+    max_y = max(y for _, y in candidate_points)
+
+    box_width = max(8, int((max_x - min_x + 1) * (width / sample_width)))
+    box_height = max(8, int((max_y - min_y + 1) * (height / sample_height)))
+    box_x = max(0, int(min_x * (width / sample_width)))
+    box_y = max(0, int(min_y * (height / sample_height)))
+    box_x2 = min(width, box_x + box_width)
+    box_y2 = min(height, box_y + box_height)
+
+    if box_x2 - box_x <= 0 or box_y2 - box_y <= 0:
+        return []
+
+    return [
+        {
+            "x": box_x,
+            "y": box_y,
+            "width": box_x2 - box_x,
+            "height": box_y2 - box_y,
+            "confidence": 0.7,
+            "reason": "região visualmente contrastante detectada pela análise local",
+        }
+    ]
+
+
+def build_grounding_context_text(image_names: list[str], grounding_contexts: list[list[dict[str, Any]]]) -> str:
+    sections: list[str] = []
+    for index, image_name in enumerate(image_names):
+        contexts = grounding_contexts[index] if index < len(grounding_contexts) else []
+        if contexts:
+            details = "; ".join(
+                f"bbox(x={item['x']}, y={item['y']}, w={item['width']}, h={item['height']}, conf={item['confidence']}) {item['reason']}"
+                for item in contexts
+            )
+            sections.append(f"{index + 1}. {image_name}: {details}")
+        else:
+            sections.append(f"{index + 1}. {image_name}: nenhuma região candidata confirmada pela análise local")
+
+    return "Contexto de grounding/segmentação local:\n" + "\n".join(sections)
+
+
+def build_analysis_prompts(prompt: str, image_names: list[str], grounding_contexts: list[list[dict[str, Any]]] | None = None) -> str:
+    image_context = "\n".join(f"{index + 1}. {name}" for index, name in enumerate(image_names))
+    grounding_text = build_grounding_context_text(image_names, grounding_contexts or [])
+    return (
+        f"{build_prompt_text(prompt)}\n\nImagens anexadas:\n{image_context}\n\n"
+        f"{grounding_text}\n\n"
+        "Fluxo de validação visual:\n"
+        "1. Identifique o tipo do dano e o contexto visual com base na imagem.\n"
+        "2. Use o contexto de grounding/segmentação local como evidência para localizar melhor o objeto ou área suspeita.\n"
+        "3. Valide a imagem antes de retornar qualquer resposta.\n"
+        "4. Confirme que cada issue listada é realmente visível, suportada e relevante para a imagem.\n"
+        "5. Se a imagem estiver desfocada, escura, muito distante, mal iluminada ou não permitir confirmação, marque a limitação e não invente diagnóstico.\n"
+        "6. Revise localização, coordenadas, severidade e confiança antes de finalizar.\n"
+        "7. Não altere a estrutura do JSON; apenas aprimore a análise com base na validação visual.\n"
+        "8. Não retorne texto fora do JSON.\n\n"
+        "Ordem de análise: considere cada imagem separadamente e relacione cada problema identificado ao nome da imagem correspondente no campo 'image_name'."
+    )
+
+
+def build_validation_prompt(prompt: str, image_names: list[str], previous_payload: dict[str, Any], grounding_contexts: list[list[dict[str, Any]]] | None = None) -> str:
+    image_context = "\n".join(f"{index + 1}. {name}" for index, name in enumerate(image_names))
+    grounding_text = build_grounding_context_text(image_names, grounding_contexts or [])
+    previous_payload_text = json.dumps(previous_payload, ensure_ascii=False, indent=2)
+    return (
+        f"{build_prompt_text(prompt)}\n\nImagens anexadas:\n{image_context}\n\n"
+        f"{grounding_text}\n\n"
+        "Revise a análise anterior antes de responder.\n"
+        "- Valide visualmente cada problema sugerido contra as imagens anexadas.\n"
+        "- Use o contexto de grounding/segmentação local para afinar a localização dos problemas.\n"
+        "- Remova ou reduza problemas que não estejam claramente visíveis.\n"
+        "- Aumente a precisão de localização, coordenadas, severidade e confiança quando possível.\n"
+        "- Se não houver confirmação visual suficiente, prefira limitar o relato e adicionar restrições nas limitações.\n"
+        "- Não altere a estrutura do JSON; apenas refine o conteúdo.\n"
+        "- Não retorne texto fora do JSON.\n\n"
+        f"Análise anterior para revisão:\n{previous_payload_text}"
+    )
+
+
 def normalize_payload(payload: dict[str, Any]) -> dict[str, Any]:
     normalized = dict(payload)
     issues = normalized.get("issues") or []
@@ -203,6 +323,7 @@ def analyze_images(
         llm = build_llm(provider=settings["provider"], model=settings["model"])
 
         image_parts: list[dict[str, Any]] = []
+        grounding_contexts: list[list[dict[str, Any]]] = []
         for file in files:
             image_bytes = file.file.read()
             if not image_bytes:
@@ -215,12 +336,10 @@ def analyze_images(
                     "image_url": {"url": f"data:{file.content_type};base64,{image_base64}"},
                 }
             )
+            grounding_contexts.append(build_grounding_context(image_bytes))
 
         image_names = [file.filename or f"imagem_{index + 1}" for index, file in enumerate(files)]
-        image_context = "\n".join(
-            f"{index + 1}. {name}" for index, name in enumerate(image_names)
-        )
-        prompt_text = f"{build_prompt_text(prompt)}\n\nImagens anexadas:\n{image_context}\n\nOrdem de análise: considere cada imagem separadamente e relacione cada problema identificado ao nome da imagem correspondente no campo 'image_name'."
+        prompt_text = build_analysis_prompts(prompt, image_names, grounding_contexts)
 
         content = [
             {"type": "text", "text": prompt_text},
@@ -238,7 +357,29 @@ def analyze_images(
             analysis_text = str(response.content)
 
         payload = extract_json_payload(analysis_text)
-        normalized_payload = normalize_payload(payload)
+        validated_payload = payload
+
+        validation_prompt_text = build_validation_prompt(prompt, image_names, payload, grounding_contexts)
+        validation_content = [
+            {"type": "text", "text": validation_prompt_text},
+            *image_parts,
+        ]
+        validation_message = HumanMessage(content=validation_content)
+        try:
+            validation_response = llm.invoke([validation_message])
+            if isinstance(validation_response.content, list):
+                validation_text = "\n".join(
+                    block.get("text", "") if isinstance(block, dict) else str(block)
+                    for block in validation_response.content
+                )
+            else:
+                validation_text = str(validation_response.content)
+
+            validated_payload = extract_json_payload(validation_text)
+        except Exception:
+            validated_payload = payload
+
+        normalized_payload = normalize_payload(validated_payload)
         normalized_payload.setdefault("prompt", prompt)
         normalized_payload.setdefault("provider", settings["provider"])
         normalized_payload.setdefault("model", settings["model"])

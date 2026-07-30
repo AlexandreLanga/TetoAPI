@@ -5,6 +5,8 @@ from fastapi import UploadFile
 
 from app.core.config import DEFAULT_LLM_PROVIDER, OPENAI_MODEL
 from app.services.image_analysis import (
+    build_analysis_prompts,
+    build_grounding_context,
     extract_json_payload,
     get_model_settings,
     normalize_payload,
@@ -84,6 +86,16 @@ class ExtractJsonPayloadTests(unittest.TestCase):
 
         self.assertEqual(settings["provider"], DEFAULT_LLM_PROVIDER)
         self.assertEqual(settings["model"], OPENAI_MODEL if DEFAULT_LLM_PROVIDER == "openai" else settings["model"])
+
+    def test_build_analysis_prompts_includes_validation_instruction(self):
+        prompt_text = build_analysis_prompts("Analise o telhado", ["img1.jpg"], [[{"x": 1, "y": 2, "width": 3, "height": 4, "confidence": 0.7, "reason": "teste"}]])
+
+        self.assertIn("valide a imagem", prompt_text.lower())
+        self.assertIn("não retorne texto fora do json", prompt_text.lower())
+        self.assertIn("grounding/segmentação local", prompt_text.lower())
+
+    def test_build_grounding_context_handles_empty_bytes(self):
+        self.assertEqual(build_grounding_context(b""), [])
 
 
 if __name__ == "__main__":

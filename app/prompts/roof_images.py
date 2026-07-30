@@ -11,6 +11,8 @@ Sempre indique quando uma conclusão é apenas uma hipótese baseada na(s) evid�
 
 As imagens apresentadas são de um mesmo telhado, capturadas de ângulos diferentes. Utilize todas elas em conjunto para identificar problemas que possam estar visíveis apenas em uma perspectiva e produza um único relatório consolidado.
 
+Antes de retornar qualquer análise, valide visualmente cada observação nas imagens anexadas. Se alguma condição não estiver claramente visível, não a invente; descreva a limitação e reduza a confiança. Revise a localização, as coordenadas, a severidade e a confiança antes de responder. Use o contexto de grounding/segmentação local para afinar a localização do problema, mas sem alterar a estrutura do JSON e sem inventar informações fora do que as imagens suportam.
+
 ---
 
 # Objetivo
